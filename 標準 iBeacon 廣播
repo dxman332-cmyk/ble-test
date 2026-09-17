@@ -1,0 +1,78 @@
+//Home Assistant 的藍牙監聽功能最喜歡、也最認得的是標準的 iBeacon 協議 [INDEX]。請將您的 Beetle ESP32-C3 燒錄以下這份專為 HA 背景監聽量身打造、且完美契合您 3.3.11 新版庫、帶有硬體最低功率（-24 dBm） 的通用程式碼。10 扇門全部燒錄這同一份代碼，只有 Minor 欄位（第 10 行）要分別改成 1 到 10 來代表不同的門號 [INDEX]：
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEBeacon.h>
+#include "esp_bt.h"
+
+// 【多門管理】10 扇門共用同一個 UUID，但用 Minor 區分門號
+// 燒錄 1 號門就寫 1，燒錄 2 號門就改 2，以此類推
+#define BEACON_UUID  "742783ab-ad4c-4656-9d8f-27bd85948311" // Proton 門禁專用 UUID
+#define BEACON_MAJOR 1
+#define BEACON_MINOR 1  // <-- 改成 1~10 代表大門、後門、會議室等
+
+HardwareSerial SerialCOM2(1);
+#define RX2_PIN 2  
+#define TX2_PIN 3  
+#define RELAY_PIN 5  
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== Proton 門禁 [HA 背景無感感應版] 啟動 ===");
+
+  SerialCOM2.begin(115200, SERIAL_8N1, RX2_PIN, TX2_PIN);
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); 
+
+  // 1. 初始化藍牙
+  BLEDevice::init("");
+
+  // 2. 建立標準 iBeacon 物件，交給 HA 識別
+  BLEBeacon oBeacon = BLEBeacon();
+  oBeacon.setManufacturerId(0x4C00); // Apple ID (固定 0x4C00)
+  oBeacon.setProximityUUID(BLEUUID(BEACON_UUID));
+  oBeacon.setMajor(BEACON_MAJOR);
+  oBeacon.setMinor(BEACON_MINOR);
+  oBeacon.setSignalPower(-65); // 1米基準值設定為 -65
+
+  // 3. 【核心功率調試】壓低到最低功率 -24 dBm，將物理訊號範圍鎖定在極近距離
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N24); 
+
+  // 4. 打包數據並啟動廣播 (新版 3.3.11 防截斷標準寫法)
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  BLEAdvertisementData oAdvertisementData = BLEAdvertisementData();
+  oAdvertisementData.setFlags(0x04); // 純 BLE
+  
+  String beaconDataStr = oBeacon.getData();
+  char beacon_data[26];
+  beacon_data[0] = 26;   // 長度
+  beacon_data[1] = 0xFF; // 製造商標誌
+  for (int i = 0; i < 24; i++) {
+    beacon_data[2 + i] = beaconDataStr[i];
+  }
+  oAdvertisementData.addData(beacon_data, 26);
+  pAdvertising->setAdvertisementData(oAdvertisementData);
+
+  // 50ms 高頻率廣播，保證手機貼上去瞬間在背景被喚醒
+  pAdvertising->setMinInterval(80); 
+  pAdvertising->setMaxInterval(80); 
+  pAdvertising->start();
+  
+  Serial.print("[藍牙] iBeacon 匿名近場廣播中... 目前門號: ");
+  Serial.println(BEACON_MINOR);
+}
+
+void loop() {
+  // 5. 監聽後端伺服器 (一門一 IP) 傳來的開門指令
+  if (SerialCOM2.available() > 0) {
+    String cmd = SerialCOM2.readStringUntil('\n');
+    cmd.trim();
+    if (cmd == "OPEN") {
+      Serial.println(">>> [HA 聯動成功] 驅動大門解鎖 2 秒！ <<<");
+      digitalWrite(RELAY_PIN, HIGH); 
+      delay(2000);                   
+      digitalWrite(RELAY_PIN, LOW);  
+      Serial.println(">>> 鎖具已重新上鎖。 <<<");
+    }
+  }
+}
