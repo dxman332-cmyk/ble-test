@@ -1,0 +1,66 @@
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEAdvertising.h>
+#include "esp_bt.h"
+
+HardwareSerial SerialCOM2(1);
+#define RX2_PIN 2  // 連接 EKT010 的 TXD
+#define TX2_PIN 3  // 連接 EKT010 的 RXD
+#define RELAY_PIN 5  
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== Proton 門禁 [自動感應免配對版] 啟動 ===");
+
+  // 1. 初始化串口（未來對接雙串口伺服器 COM2）
+  SerialCOM2.begin(115200, SERIAL_8N1, RX2_PIN, TX2_PIN);
+  
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); 
+
+  // 2. 初始化極低功率藍牙（維持匿名隱私，不外顯名稱，防止他人搜到）
+  BLEDevice::init(""); 
+  
+  // 發射功率固定在 -12 dBm 或最弱的 -24 dBm
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12); 
+  
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  BLEAdvertisementData oAdvertisementData = BLEAdvertisementData();
+  oAdvertisementData.setFlags(0x04); // 純 BLE 模式
+
+  // 3. 打包 Proton 專屬近場數據 (0x50 0x52)
+  uint8_t m_data[2]; 
+  m_data[0] = 0x50; // 'P'
+  m_data[1] = 0x52; // 'R'
+  
+  // 注入數據包
+  oAdvertisementData.setManufacturerData(String((char*)m_data, 2));
+  pAdvertising->setAdvertisementData(oAdvertisementData);
+
+  // 50ms 超高速廣播，確保手機貼上去的瞬間「零延遲」觸發
+  pAdvertising->setMinInterval(80); 
+  pAdvertising->setMaxInterval(80); 
+  pAdvertising->start();
+  
+  Serial.println("[藍牙] Proton 匿名近場廣播中... 等待手機自動靠近...");
+}
+
+void loop() {
+  // 4. 監聽後端伺服器網路層傳過來的開門指令 (一門一 IP 架構)
+  if (SerialCOM2.available() > 0) {
+    String cmd = SerialCOM2.readStringUntil('\n');
+    cmd.trim();
+    
+    Serial.print("[串口收到網聯指令] "); 
+    Serial.println(cmd);
+    
+    if (cmd == "OPEN") {
+      Serial.println(">>> [自動感應成功] 驅動大門解鎖 2 秒！ <<<");
+      digitalWrite(RELAY_PIN, HIGH); 
+      delay(2000);                   
+      digitalWrite(RELAY_PIN, LOW);  
+      Serial.println(">>> 鎖具已重新上鎖。 <<<");
+    }
+  }
+}
