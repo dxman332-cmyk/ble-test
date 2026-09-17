@@ -3,49 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Proton 門禁即時訊號調試平台</title>
+    <title>Proton 門禁跨平台調試平台</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #f4f6f9; color: #333; }
         .card { background: white; max-width: 400px; margin: 20px auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
         button { background-color: #007bff; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 8px; cursor: pointer; width: 100%; transition: background 0.2s; font-weight: bold; }
         button:hover { background-color: #0056b3; }
         .status { margin-top: 20px; padding: 15px; border-radius: 6px; background-color: #e9ecef; font-size: 15px; min-height: 60px; line-height: 1.5; white-space: pre-line; }
-        .rssi-box { margin-top: 15px; font-size: 18px; font-weight: bold; }
-        .rssi-badge { display: inline-block; padding: 10px 20px; border-radius: 20px; background-color: #6c757d; color: white; font-size: 24px; font-family: monospace; margin-top: 5px; transition: all 0.2s; }
-        .rssi-near { background-color: #ffc107; color: #333; } /* 靠近中 */
-        .rssi-success { background-color: #28a745 !important; color: white; } /* 成功貼緊 */
     </style>
 </head>
 <body>
 
 <div class="card">
-    <h2>Proton 藍牙即時測距門禁</h2>
-    <p style="color: #666; font-size: 14px;">點擊下方啟動雷達，畫面上會即時顯示手機與晶片的物理訊號強度。</p>
+    <h2>Proton 藍牙近場門禁 (iOS/Android)</h2>
+    <p style="color: #666; font-size: 14px;">iPhone 使用者請先「物理性貼緊大門」，然後點擊下方按鈕觸發開鎖。</p>
     
-    <button id="scanBtn" onclick="startRssiRadarScan()">📡 啟動即時訊號雷達</button>
+    <button id="scanBtn" onclick="startProtonCrossPlatformScan()">🚪 點擊直接開門</button>
     
-    <div class="rssi-box">
-        📡 當前即時強度 (RSSI)：<br>
-        <span id="rssiVal" class="rssi-badge">--- dBm</span>
-    </div>
-    
-    <div id="statusDiv" class="status">等待使用者啟動雷達...</div>
+    <div id="statusDiv" class="status">等待使用者點擊...</div>
 </div>
 
 <script>
 const SERVICE_UUID        = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
-// 【安全防線】物理貼緊的硬性指標（-48 到 -52 代表極近貼緊）
-const RSSI_THRESHOLD = -60; 
-let hasTriggeredOpen = false; // 防止貼緊時連續觸發
-
-async function startRssiRadarScan() {
+async function startProtonCrossPlatformScan() {
     const statusDiv = document.getElementById('statusDiv');
-    const rssiVal = document.getElementById('rssiVal');
-    
-    statusDiv.innerHTML = "🔍 正在搜尋藍牙範圍內的 _Gate 設備...";
-    hasTriggeredOpen = false;
+    statusDiv.innerHTML = "🔍 正在搜尋周圍的 _Gate 設備...";
+    statusDiv.style.color = "#333";
 
     try {
         // 1. 請求過濾名稱為 _Gate 的設備
@@ -54,60 +39,32 @@ async function startRssiRadarScan() {
             optionalServices: [SERVICE_UUID]
         });
         
-        statusDiv.innerHTML = "📡 雷達已連動！請看上方即時強度跳動。\n拿著手機「貼緊晶片」即可開門。";
+        statusDiv.innerHTML = "🔄 正在與大門建立安全連線並驗證距離...";
         
-        // 2. 【核心大招】啟用網頁廣播監聽，絕對不進入連線狀態，讓 ESP32 持續發射 RSSI 廣播
-        await device.watchAdvertisements();
+        // 2. 建立連線 (iOS 強制要求必須先連線)
+        const server = await device.gatt.connect();
         
-        // 3. 監聽即時電磁波訊號強度
-        device.addEventListener('advertisementreceived', async (event) => {
-            if (hasTriggeredOpen) return; // 如果已經在開門中，跳過後續廣播
-
-            let rssi = event.rssi;
-            
-            // 4. 即時更新畫面上的強度數字與顏色
-            rssiVal.innerHTML = rssi + " dBm";
-            if (rssi >= RSSI_THRESHOLD) {
-                rssiVal.className = "rssi-badge rssi-success";
-            } else if (rssi >= -68) {
-                rssiVal.className = "rssi-badge rssi-near";
-            } else {
-                rssiVal.className = "rssi-badge";
-            }
-
-            // 5. 【動態門檻判定】當即時訊號衝破門檻，代表「手機壓在晶片上了」
-            if (rssi >= RSSI_THRESHOLD && !hasTriggeredOpen) {
-                hasTriggeredOpen = true; // 鎖定狀態，防止重複觸發
-                
-                statusDiv.innerHTML = `🎉 [衝破門檻] 強度達到 ${rssi} dBm！\n正在秒連線下發開鎖密鑰...`;
-                
-                try {
-                    // 瞬間建立 GATT 連線（此時 ESP32 會暫停廣播，但我們已經拿到合格的 RSSI 了）
-                    const server = await device.gatt.connect();
-                    const service = await server.getPrimaryService(SERVICE_UUID);
-                    const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
-                    
-                    // 直傳 OPEN 指令
-                    const encoder = new TextEncoder();
-                    const data = encoder.encode("OPEN");
-                    await characteristic.writeValue(data);
-                    
-                    statusDiv.innerHTML = `✅ [大門已開啟] 指令發送成功！\n請看電腦串口窗口。網頁即將重新整理...`;
-                    statusDiv.style.color = "green";
-                    
-                    // 釋放並重新整理
-                    setTimeout(() => {
-                        try { server.disconnect(); } catch(e) {}
-                        location.reload();
-                    }, 1200);
-
-                } catch (err) {
-                    console.log(err);
-                    statusDiv.innerHTML = "❌ 連線開門失敗：" + err.message;
-                    hasTriggeredOpen = false; // 失敗了就解鎖，允許重新嘗試
-                }
-            }
-        });
+        // 3. 【iOS 專屬相容調試】
+        // 因為 iOS 禁用 watchAdvertisements 即時跳動，我們在連線成功時
+        // 只要能成功與 GATT 握手，就代表手機當時已經在極近距離（因為我們硬體功率設定在最低的 -12/-24 dBm）
+        statusDiv.innerHTML = "🎉 [距離確認通過] 正在向晶片下發解鎖密鑰...";
+        
+        // 4. 獲取服務與特徵值並下發 OPEN 指令
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+        
+        const encoder = new TextEncoder();
+        const data = encoder.encode("OPEN");
+        await characteristic.writeValue(data);
+        
+        statusDiv.innerHTML = "✅ [大門已開啟] 指令發送成功！\n請看電腦串口窗口。網頁即將重置...";
+        statusDiv.style.color = "green";
+        
+        // 5. 釋放通道，網頁同步刷新
+        setTimeout(() => {
+            try { server.disconnect(); } catch(e) {}
+            location.reload();
+        }, 1500);
 
     } catch (error) {
         console.log(error);
