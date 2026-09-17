@@ -37,7 +37,7 @@ async function startWebBluetoothScan() {
     try {
         // 1. 請求過濾名稱為 Proton_Gate 的設備
         const device = await navigator.bluetooth.requestDevice({
-            filters: [{ name: 'Proton_Gate' }],
+            filters: [{ name: '_Gate' }],
             optionalServices: [SERVICE_UUID]
         });
         
