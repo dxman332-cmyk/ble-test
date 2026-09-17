@@ -68,9 +68,7 @@ async function startWebBluetoothScan() {
             statusDiv.innerHTML = "等待下一次靠近刷卡...";
             statusDiv.style.color = "#333";
         }, 3000);
-        // 【核心新增】斷開後自動重新整理網頁，徹底清空瀏覽器藍牙鎖定快取
-    location.reload(); 
-}, 3000);
+        
 
     } catch (error) {
         console.log(error);
