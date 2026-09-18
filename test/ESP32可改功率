@@ -1,19 +1,21 @@
-#include <NimBLEDevice.h> // 【終極優化】改用高效能、免重啟的 NimBLE 庫
+#include <NimBLEDevice.h> // 工業級高效能、免重啟藍牙庫
 #include <Preferences.h>
 #include "esp_bt.h"
 
+// 【安全防線對齊】使用 ASCII 編碼轉化的 OGT 與 繁體中文「門禁」專屬識別碼
 #define SERVICE_UUID            "4f475400-0000-0000-0000-000000000000" // 'OGT'
-#define CHARACTERISTIC_UUID_KEY "b9eab6ea-0000-0000-0000-000000000000" // '門禁' 通道
-#define CHARACTERISTIC_UUID_PWR "b9eab6eb-0000-0000-0000-000000000000" // '功率' 通道
+#define CHARACTERISTIC_UUID_KEY "b9eab6ea-0000-0000-0000-000000000000" // '門禁' 開鎖通道
+#define CHARACTERISTIC_UUID_PWR "b9eab6eb-0000-0000-0000-000000000000" // '功率' 配置通道
 
 HardwareSerial SerialCOM2(1);
-#define RX2_PIN 2  
-#define TX2_PIN 3  
+#define RX2_PIN 2  // 連接 EKT010 的 TXD
+#define TX2_PIN 3  // 連接 EKT010 的 RXD
 
 Preferences preferences;
 int current_pwr_level = 12; 
-BLEServer *pServer = NULL;
+NimBLEServer *pServer = NULL;
 
+// 根據數值設定藍牙實際發射功率的輔助函數
 void applyBluetoothPower(int pwr) {
   if (pwr == 24) NimBLEDevice::setPower(ESP_PWR_LVL_N24);
   else if (pwr == 21) NimBLEDevice::setPower(ESP_PWR_LVL_N21);
@@ -38,7 +40,7 @@ class OgtServerCallbacks: public NimBLEServerCallbacks {
     }
 };
 
-// 藍牙通道 1：處理手機貼緊轉發 485 密文
+// 藍牙通道 1 回呼：處理手機貼緊轉發 485 密文
 class MyCallbacks: public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic *pCharacteristic) {
       String encryptedToken = pCharacteristic->getValue().c_str();
@@ -48,18 +50,18 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
         Serial.println("----------------------------------------------");
         Serial.print("[藍牙接收] 密文: "); Serial.println(encryptedToken);
         
-        // 透過 485 有線網路砸給局域網中心伺服器解密
+        // 透過 485 有線網路傳給局域網中心伺服器解密
         SerialCOM2.println(encryptedToken); 
         Serial.println("[485發送] 密文已甩入有線網絡。");
         Serial.println("----------------------------------------------");
         
-        // 【注意】這裡不再重啟 (ESP.restart() 已拿掉)！
-        // 網頁或 App 端會在 0.5 秒內自動下發 disconnect()，直接觸發上方的 onDisconnect 原地復活！
+        // 這裡不需要任何重啟程式碼。網頁或 App 端會在發送完成後
+        // 自動下發 disconnect()，直接觸發上方的 onDisconnect 原地復活！
       }
     }
 };
 
-// 藍牙通道 2：處理網頁滑桿直接修改發射功率
+// 藍牙通道 2 回呼：處理網頁滑桿直接修改發射功率
 class MyPwrCallbacks: public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic *pCharacteristic) {
       String cmd = pCharacteristic->getValue().c_str();
@@ -80,13 +82,15 @@ class MyPwrCallbacks: public NimBLECharacteristicCallbacks {
 
 void setup() {
   Serial.begin(115200);
-  delay(500); 
+  delay(1000); 
   Serial.println("\n==============================================");
   Serial.println("=== OGT 智能門禁通用系統 [NimBLE 零延遲工業版] ===");
   Serial.println("==============================================");
   
+  // 初始化與 EKT010 / 有人伺服器 COM2 的通訊波特率
   SerialCOM2.begin(115200, SERIAL_8N1, RX2_PIN, TX2_PIN);
 
+  // 讀取快閃記憶體中儲存的歷史功率設定
   preferences.begin("ogt_config", false);
   current_pwr_level = preferences.getInt("pwr_level", 12);
   preferences.end();
@@ -101,25 +105,29 @@ void setup() {
   
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
 
-  // 3. 建立開鎖通道
-  NimBLECharacteristic *pCharKey = pService->createCharacteristic(CHAR_KEY_UUID, NIMBLE_PROPERTY::WRITE);
+  // 3. 【已修正命名錯誤】建立開鎖通道，精準對齊 CHARACTERISTIC_UUID_KEY
+  NimBLECharacteristic *pCharKey = pService->createCharacteristic(CHARACTERISTIC_UUID_KEY, NIMBLE_PROPERTY::WRITE);
   pCharKey->setCallbacks(new MyCallbacks());
 
-  // 4. 建立改功率通道
-  NimBLECharacteristic *pCharPwr = pService->createCharacteristic(CHAR_PWR_UUID, NIMBLE_PROPERTY::WRITE);
+  // 4. 【已修正命名錯誤】建立改功率通道，精準對齊 CHARACTERISTIC_UUID_PWR
+  NimBLECharacteristic *pCharPwr = pService->createCharacteristic(CHARACTERISTIC_UUID_PWR, NIMBLE_PROPERTY::WRITE);
   pCharPwr->setCallbacks(new MyPwrCallbacks());
 
   pService->start();
 
-  // 5. 配置高速廣播
+  // 5. 【已修正 NimBLE 語法】配置高速廣播
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinInterval(80); // 50ms 超高速廣播
+  
+  // 在 NimBLE 庫中，開啟掃描回應（Scan Response）是透過 enableScanResponse(true)
+  pAdvertising->enableScanResponse(true); 
+  
+  pAdvertising->setMinInterval(80); // 50ms 超高速廣播，提供極速貼緊感應連線
   pAdvertising->setMaxInterval(80); 
   pAdvertising->start();
   
-  Serial.print("[記憶讀取] 當前發射功率：-"); Serial.print(current_pwr_level); Serial.println(" dBm");
+  Serial.print("[記憶讀取] 廣播名稱：_Gate，當前發射功率：-"); 
+  Serial.print(current_pwr_level); Serial.println(" dBm");
   Serial.println("[系統] 485 有線轉發就緒，NimBLE 24小時不間斷監聽中...");
   Serial.println("----------------------------------------------");
 }
@@ -130,7 +138,10 @@ void loop() {
     String cmd = SerialCOM2.readStringUntil('\n'); cmd.trim();
     if (cmd.startsWith("SET_PWR:")) {
       int new_pwr = cmd.substring(8).toInt();
-      preferences.begin("ogt_config", false); preferences.putInt("pwr_level", new_pwr); preferences.end();
+      preferences.begin("ogt_config", false); 
+      preferences.putInt("pwr_level", new_pwr); 
+      preferences.end();
+      
       applyBluetoothPower(new_pwr);
       Serial.print("\n[網絡有線指令] 成功更改功率為: -"); Serial.print(new_pwr); Serial.println(" dBm");
     }
