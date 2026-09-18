@@ -15,7 +15,6 @@ Preferences preferences;
 int current_pwr_level = 12; 
 NimBLEServer *pServer = NULL;
 
-// 根據數值設定藍牙實際發射功率的輔助函數
 void applyBluetoothPower(int pwr) {
   if (pwr == 24) NimBLEDevice::setPower(ESP_PWR_LVL_N24);
   else if (pwr == 21) NimBLEDevice::setPower(ESP_PWR_LVL_N21);
@@ -31,37 +30,27 @@ void applyBluetoothPower(int pwr) {
   }
 }
 
-// 監聽大門連線狀態：一斷開連線，0 毫秒立刻原地復活，重新開始發射廣播！
 class OgtServerCallbacks: public NimBLEServerCallbacks {
     void onDisconnect(NimBLEServer* pServer) {
-        // 【核心免重啟防線】斷開連線後秒開啟廣播，不需經歷漫長的重新開機
         NimBLEDevice::startAdvertising();
         Serial.println("[系統通知] 手機已離場，藍牙雷達廣播已於 0 毫秒內同步重新部署！");
     }
 };
 
-// 藍牙通道 1 回呼：處理手機貼緊轉發 485 密文
 class MyCallbacks: public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic *pCharacteristic) {
       String encryptedToken = pCharacteristic->getValue().c_str();
       encryptedToken.trim(); 
-
       if (encryptedToken.length() > 0) {
         Serial.println("----------------------------------------------");
         Serial.print("[藍牙接收] 密文: "); Serial.println(encryptedToken);
-        
-        // 透過 485 有線網路傳給局域網中心伺服器解密
         SerialCOM2.println(encryptedToken); 
         Serial.println("[485發送] 密文已甩入有線網絡。");
         Serial.println("----------------------------------------------");
-        
-        // 這裡不需要任何重啟程式碼。網頁或 App 端會在發送完成後
-        // 自動下發 disconnect()，直接觸發上方的 onDisconnect 原地復活！
       }
     }
 };
 
-// 藍牙通道 2 回呼：處理網頁滑桿直接修改發射功率
 class MyPwrCallbacks: public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic *pCharacteristic) {
       String cmd = pCharacteristic->getValue().c_str();
@@ -72,8 +61,6 @@ class MyPwrCallbacks: public NimBLECharacteristicCallbacks {
         preferences.putInt("pwr_level", new_pwr);
         preferences.end();
         Serial.print("\n[藍牙配置] 成功修改功率為: -"); Serial.print(new_pwr); Serial.println(" dBm");
-        
-        // 動態即時變更功率，免重啟！
         applyBluetoothPower(new_pwr); 
         Serial.println("[系統] 功率已動態即時生效，免重啟復位！");
       }
@@ -90,39 +77,35 @@ void setup() {
   // 初始化與 EKT010 / 有人伺服器 COM2 的通訊波特率
   SerialCOM2.begin(115200, SERIAL_8N1, RX2_PIN, TX2_PIN);
 
-  // 讀取快閃記憶體中儲存的歷史功率設定
   preferences.begin("ogt_config", false);
   current_pwr_level = preferences.getInt("pwr_level", 12);
   preferences.end();
 
-  // 1. 初始化 NimBLE 藍牙
   NimBLEDevice::init("_Gate"); 
   applyBluetoothPower(current_pwr_level);
 
-  // 2. 建立伺服器並綁定「秒斷開重新廣播」回呼
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new OgtServerCallbacks());
   
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
 
-  // 3. 【已修正命名錯誤】建立開鎖通道，精準對齊 CHARACTERISTIC_UUID_KEY
   NimBLECharacteristic *pCharKey = pService->createCharacteristic(CHARACTERISTIC_UUID_KEY, NIMBLE_PROPERTY::WRITE);
   pCharKey->setCallbacks(new MyCallbacks());
 
-  // 4. 【已修正命名錯誤】建立改功率通道，精準對齊 CHARACTERISTIC_UUID_PWR
   NimBLECharacteristic *pCharPwr = pService->createCharacteristic(CHARACTERISTIC_UUID_PWR, NIMBLE_PROPERTY::WRITE);
   pCharPwr->setCallbacks(new MyPwrCallbacks());
 
   pService->start();
 
-  // 5. 【已修正 NimBLE 語法】配置高速廣播
+  // 5. 【已徹底修復】配置 NimBLE 標準廣播數據
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  
-  // 在 NimBLE 庫中，開啟掃描回應（Scan Response）是透過 enableScanResponse(true)
   pAdvertising->enableScanResponse(true); 
   
-  pAdvertising->setMinInterval(80); // 50ms 超高速廣播，提供極速貼緊感應連線
+  // 💡 強制讓 NimBLE 在廣播封包中夾帶 "_Gate" 裝置名稱（已移除錯誤的 setScanResponse）
+  pAdvertising->setName("_Gate"); 
+
+  pAdvertising->setMinInterval(80); 
   pAdvertising->setMaxInterval(80); 
   pAdvertising->start();
   
@@ -133,7 +116,6 @@ void setup() {
 }
 
 void loop() {
-  // 局域網有線網路改功率指令同步支援，此處同樣優化為免重啟、動態即時生效！
   if (SerialCOM2.available() > 0) {
     String cmd = SerialCOM2.readStringUntil('\n'); cmd.trim();
     if (cmd.startsWith("SET_PWR:")) {
@@ -141,7 +123,6 @@ void loop() {
       preferences.begin("ogt_config", false); 
       preferences.putInt("pwr_level", new_pwr); 
       preferences.end();
-      
       applyBluetoothPower(new_pwr);
       Serial.print("\n[網絡有線指令] 成功更改功率為: -"); Serial.print(new_pwr); Serial.println(" dBm");
     }
