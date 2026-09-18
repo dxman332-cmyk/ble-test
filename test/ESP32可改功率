@@ -1,0 +1,146 @@
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <Preferences.h> // 引入快閃記憶體庫
+#include "esp_bt.h"
+
+// 【安全防線對齊】使用 ASCII 編碼轉化的 OGT 與 繁體中文「門禁」專屬識別碼
+#define SERVICE_UUID            "4f475400-0000-0000-0000-000000000000" // 'OGT'
+#define CHARACTERISTIC_UUID_KEY "b9eab6ea-0000-0000-0000-000000000000" // '門禁' 開鎖通道
+#define CHARACTERISTIC_UUID_PWR "b9eab6eb-0000-0000-0000-000000000000" // 功率調整通道
+
+#define RELAY_PIN 5  
+
+Preferences preferences;
+int current_pwr_level = 12; // 預設功率等級為 12 (-12 dBm)
+
+// 根據數值設定藍牙實際發射功率的輔助函數
+void applyBluetoothPower(int pwr) {
+  if (pwr == 24) esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N24);
+  else if (pwr == 21) esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N21);
+  else if (pwr == 18) esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N18);
+  else if (pwr == 15) esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N15);
+  else if (pwr == 12) esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12);
+  else if (pwr == 9)  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N9);
+  else if (pwr == 6)  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N6);
+  else if (pwr == 3)  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N3);
+  else if (pwr == 0)  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N0);
+  else {
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12); // 防錯預設
+  }
+}
+
+// 藍牙通道 1 回呼：處理手機網頁點擊開門
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      String value = pCharacteristic->getValue().c_str();
+      value.trim(); 
+
+      if (value.length() > 0) {
+        Serial.println("----------------------------------------------");
+        Serial.print("[藍牙串口接收] 收到來自手機網頁的指令: \"");
+        Serial.print(value);
+        Serial.println("\"");
+        
+        if (value == "OPEN") {
+          Serial.println(">>> [驗證成功] 格式密碼正確！驅動大門解鎖 2 秒！ <<<");
+          digitalWrite(RELAY_PIN, HIGH); // 開鎖
+          delay(2000);                   // 保持開鎖 2 秒
+          digitalWrite(RELAY_PIN, LOW);  // 關鎖
+          Serial.println(">>> 鎖具已自動重新上鎖。 <<<");
+          Serial.println("----------------------------------------------");
+          
+          // 開鎖完成後自動重啟，清空手機藍牙快取死鎖
+          delay(500);
+          ESP.restart();
+        } else {
+          Serial.println("[-] 密碼字串不符，拒絕開門。");
+          Serial.println("----------------------------------------------");
+        }
+      }
+    }
+};
+
+// 藍牙通道 2 回呼：處理手機網頁滑桿直接修改發射功率
+class MyPwrCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pChar) {
+      String cmd = pChar->getValue().c_str();
+      cmd.trim();
+      if (cmd.startsWith("SET_PWR:")) {
+        int new_pwr = cmd.substring(8).toInt();
+        
+        // 寫入快閃記憶體
+        preferences.begin("ogt_config", false);
+        preferences.putInt("pwr_level", new_pwr);
+        preferences.end();
+        
+        Serial.print("\n[藍牙配置] 成功透過網頁將功率修改為: -"); Serial.print(new_pwr); Serial.println(" dBm");
+        Serial.println("[系統] 硬體快閃記憶體已永久儲存，0.5秒後重啟生效...");
+        delay(500);
+        ESP.restart(); // 重啟套用新距離
+      }
+    }
+};
+
+void setup() {
+  Serial.begin(115200);
+  delay(1500); 
+  Serial.println("\n==============================================");
+  Serial.println("=== OGT 智能門禁通用系統 [免燒錄改功率版] ===");
+  Serial.println("==============================================");
+  
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); 
+
+  // 【核心步驟】讀取歷史永久快閃記憶體中的功率設定
+  preferences.begin("ogt_config", false);
+  current_pwr_level = preferences.getInt("pwr_level", 18); // 預設讀取 -18 dBm
+  preferences.end();
+
+  // 1. 初始化藍牙，名稱設定為全通用的 "_Gate"
+  BLEDevice::init("_Gate"); 
+  
+  // 2. 套用硬體功率
+  applyBluetoothPower(current_pwr_level);
+
+  // 3. 建立 BLE 伺服器與服務
+  BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(NULL); // 移除不穩定的連線回呼，確保最高工業級不當機
+  
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // 4. 【已修正命名錯誤】建立開門特徵值通道，精準綁定 CHARACTERISTIC_UUID_KEY
+  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+                                         CHARACTERISTIC_UUID_KEY,
+                                         BLECharacteristic::PROPERTY_WRITE
+                                       );
+  pCharacteristic->setCallbacks(new MyCallbacks());
+
+  // 5. 【新增】建立功率配置通道，精準綁定 CHARACTERISTIC_UUID_PWR
+  BLECharacteristic *pCharPwr = pService->createCharacteristic(
+                                         CHARACTERISTIC_UUID_PWR,
+                                         BLECharacteristic::PROPERTY_WRITE
+                                       );
+  pCharPwr->setCallbacks(new MyPwrCallbacks());
+
+  pService->start();
+
+  // 6. 設定廣播
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  
+  // 50ms 超高速廣播間隔
+  pAdvertising->setMinInterval(80); 
+  pAdvertising->setMaxInterval(80); 
+  pAdvertising->start();
+  
+  Serial.print("[記憶讀取] 廣播名稱：_Gate，當前發射功率：-"); 
+  Serial.print(current_pwr_level); Serial.println(" dBm");
+  Serial.println("[系統] 本地開門監聽與網頁免燒錄功率調試就緒...");
+  Serial.println("----------------------------------------------");
+}
+
+void loop() {
+  delay(1000);
+}
