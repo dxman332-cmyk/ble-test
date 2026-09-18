@@ -30,7 +30,7 @@
         <span id="rssiVal" class="rssi-badge">--- dBm</span>
     </div>
     
-    <div id="statusDiv" class="status">等待使用者啟動雷達...</div>
+    <div id="statusDiv" class="status">等待使用者啟動...</div>
 
     <div class="pwr-section">
         <h3 style="margin-top: 0;">🔧 隔空修改硬體發射功率</h3>
@@ -41,9 +41,9 @@
 </div>
 
 <script>
-const SERVICE_UUID    = "4f475400-0000-0000-0000-000000000000"; // 'OGT'
-const CHAR_KEY_UUID   = "b9eab6ea-0000-0000-0000-000000000000"; // '門禁' 通道
-const CHAR_PWR_UUID   = "b9eab6eb-0000-0000-0000-000000000000"; // '功率' 通道
+const SERVICE_UUID    = "4f475400-0000-0000-0000-000000000000"; 
+const CHAR_KEY_UUID   = "b9eab6ea-0000-0000-0000-000000000000"; 
+const CHAR_PWR_UUID   = "b9eab6eb-0000-0000-0000-000000000000"; 
 
 const RSSI_THRESHOLD = -52; 
 let hasTriggered = false;
@@ -54,21 +54,15 @@ async function startRssiRadarScan() {
     const statusDiv = document.getElementById('statusDiv');
     const rssiVal = document.getElementById('rssiVal');
     statusDiv.innerHTML = "🔍 正在搜尋周圍的 _Gate 設備...";
-    statusDiv.style.color = "#333";
     hasTriggered = false;
 
     try {
-        const device = await navigator.bluetooth.requestDevice({
-            filters: [{ name: '_Gate' }],
-            optionalServices: [SERVICE_UUID]
-        });
-        
-        statusDiv.innerHTML = "📡 雷達連動成功！請手持手機「物理性貼緊晶片」觸發開鎖。";
+        const device = await navigator.bluetooth.requestDevice({ filters: [{ name: '_Gate' }], optionalServices: [SERVICE_UUID] });
+        statusDiv.innerHTML = "📡 雷達連動成功！請手機「物理性貼緊晶片」觸發開鎖。";
         await device.watchAdvertisements();
         
         device.addEventListener('advertisementreceived', async (event) => {
             if (hasTriggered) return;
-            
             let rssi = event.rssi;
             rssiVal.innerHTML = rssi + " dBm";
             
@@ -84,31 +78,23 @@ async function startRssiRadarScan() {
                     const server = await device.gatt.connect();
                     const service = await server.getPrimaryService(SERVICE_UUID);
                     const characteristic = await service.getCharacteristic(CHAR_KEY_UUID);
-                    
                     await characteristic.writeValue(new TextEncoder().encode("OPEN"));
                     
-                    statusDiv.innerHTML = `✅ [密文發送成功]\n正在極速切斷並優化手機藍牙快取...`;
+                    statusDiv.innerHTML = `✅ [開門成功] 正在同步重置硬件快取...`;
                     statusDiv.style.color = "green";
                     
-                    // 【NimBLE 連續開門最佳化時序】
-                    // 1. 先主動切斷實體 GATT 連線，促使 ESP32 的 onDisconnect 0毫秒觸發廣播
-                    await server.disconnect(); 
-                    
-                    // 2. 給手機內部藍牙晶片 600 毫秒的充足時間來完全釋放快取毒素，隨後再重新整理網頁
+                    // 斷開並重整，預留 1.5 秒讓 ESP32 順利完成重啟
                     setTimeout(() => {
+                        try { server.disconnect(); } catch(e) {}
                         location.reload();
-                    }, 600);
-
+                    }, 1500);
                 } catch (err) {
                     statusDiv.innerHTML = "❌ 連線失敗：" + err.message;
                     hasTriggered = false;
                 }
             }
         });
-    } catch (error) {
-        statusDiv.innerHTML = "❌ 錯誤：" + error.message;
-        statusDiv.style.color = "red";
-    }
+    } catch (error) { statusDiv.innerHTML = "❌ 錯誤：" + error.message; }
 }
 
 async function sendPowerCmd() {
@@ -123,15 +109,14 @@ async function sendPowerCmd() {
         const characteristic = await service.getCharacteristic(CHAR_PWR_UUID);
         
         await characteristic.writeValue(new TextEncoder().encode("SET_PWR:" + pwrTarget));
-        statusDiv.innerHTML = `🎉 [設定成功] 功率已寫入硬體記憶體！\n正在切斷連線並同步刷新...`;
+        statusDiv.innerHTML = `🎉 [設定成功] 功率已寫入硬體！硬體重啟中...`;
         statusDiv.style.color = "green";
         
-        await server.disconnect();
-        setTimeout(() => { location.reload(); }, 600);
-    } catch (error) {
-        statusDiv.innerHTML = "❌ 寫入失敗：" + error.message;
-        statusDiv.style.color = "red";
-    }
+        setTimeout(() => {
+            try { server.disconnect(); } catch(e) {}
+            location.reload();
+        }, 1500);
+    } catch (error) { statusDiv.innerHTML = "❌ 寫入失敗：" + error.message; }
 }
 </script>
 </body>
