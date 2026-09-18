@@ -5,73 +5,130 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OGT 門禁遠端功率調試網頁</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; padding: 20px; background-color: #f4f6f9; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; padding: 20px; background-color: #f4f6f9; color: #333; }
         .card { background: white; max-width: 400px; margin: 20px auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        button { background-color: #007bff; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 8px; width: 100%; font-weight: bold; cursor: pointer; margin-bottom: 15px; }
+        button { background-color: #28a745; color: white; border: none; padding: 15px; font-size: 18px; border-radius: 8px; width: 100%; font-weight: bold; cursor: pointer; margin-bottom: 15px; transition: background 0.2s; }
+        button:hover { background-color: #218838; }
         .pwr-section { border-top: 1px solid #eee; padding-top: 20px; margin-top: 20px; text-align: left; }
-        .status { margin-top: 15px; padding: 12px; border-radius: 6px; background-color: #e9ecef; font-size: 14px; min-height: 40px; }
+        .pwr-btn { background-color: #ffc107; color: #333; font-size: 16px; padding: 12px; }
+        .pwr-btn:hover { background-color: #e0a800; }
+        .status { margin-top: 15px; padding: 12px; border-radius: 6px; background-color: #e9ecef; font-size: 14px; min-height: 50px; line-height: 1.4; white-space: pre-line; }
     </style>
 </head>
 <body>
 
 <div class="card">
-    <h2>OGT 門禁雙向調試平台</h2>
-    <button onclick="sendOpenCmd()">🚪 點擊測試連線開門</button>
+    <h2>OGT 藍牙近場門禁系統</h2>
+    <p style="color: #666; font-size: 13px;">請將手機物理性靠近大門，點擊下方按鈕觸發開鎖。</p>
     
+    <!-- 功能一：開門測試按鈕 -->
+    <button id="openBtn" onclick="sendOpenCmd()">🚪 點擊測試連線開門</button>
+    
+    <!-- 功能二：免燒錄功率調整區塊 -->
     <div class="pwr-section">
-        <h3>📡 現場免拆殼改發射功率</h3>
-        <p style="font-size: 13px; color: #666;">（數值負越多代表功率越弱、感應距離越近）</p>
-        <label for="pwrRange">選擇功率等級：<span id="pwrVal" style="font-weight:bold; color:#007bff;">-12</span> dBm</label>
-        <input type="range" id="pwrRange" min="9" max="24" step="3" value="12" style="width:100%; margin:15px 0;" oninput="updateLabel(this.value)">
-        <button style="background-color: #ffc107; color: #333;" onclick="sendPowerCmd()">⚡ 寫入硬件快閃記憶體</button>
+        <h3 style="margin-top: 0;">📡 現場免拆殼調整感應距離</h3>
+        <p style="font-size: 12px; color: #666; margin-bottom: 10px;">（數值負越多代表功率越弱、感應要求距離越近）</p>
+        
+        <label for="pwrRange" style="font-size: 15px; font-weight: bold;">設定發射功率：<span id="pwrVal" style="color:#007bff;">-12</span> dBm</label>
+        <input type="range" id="pwrRange" min="9" max="24" step="3" value="12" style="width:100%; margin:15px 0; cursor: pointer;" oninput="updateLabel(this.value)">
+        
+        <button class="pwr-btn" onclick="sendPowerCmd()">⚡ 寫入硬體快閃記憶體</button>
     </div>
     
-    <div id="statusDiv" class="status">等待連線...</div>
+    <div id="statusDiv" class="status">等待使用者操作...</div>
 </div>
 
 <script>
-const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-const CHAR_KEY_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-const CHAR_PWR_UUID = "b9eab6eb-0000-0000-0000-000000000000";
+// 【安全對齊核心】這三串密鑰與您的 Beetle ESP32-C3 程式碼完全對齊！
+const SERVICE_UUID    = "4f475400-0000-0000-0000-000000000000"; // 'OGT'
+const CHAR_KEY_UUID   = "b9eab6ea-0000-0000-0000-000000000000"; // '門禁' 開鎖通道
+const CHAR_PWR_UUID   = "b9eab6eb-0000-0000-0000-000000000000"; // '功率' 配置通道
 
-function updateLabel(val) { document.getElementById('pwrVal').innerText = "-" + val; }
-
-// 功能 1：原有的網頁測試開門
-async function sendOpenCmd() {
-    const statusDiv = document.getElementById('statusDiv');
-    try {
-        const device = await navigator.bluetooth.requestDevice({ filters: [{ name: '_Gate' }], optionalServices: [SERVICE_UUID] });
-        const server = await device.gatt.connect();
-        const service = await server.getPrimaryService(SERVICE_UUID);
-        const characteristic = await service.getCharacteristic(CHAR_KEY_UUID);
-        await characteristic.writeValue(new TextEncoder().encode("OPEN"));
-        statusDiv.innerHTML = "✅ 開門測試成功！";
-        setTimeout(() => { server.disconnect(); location.reload(); }, 1000);
-    } catch (e) { statusDiv.innerHTML = "❌ 失敗: " + e.message; }
+// 即時更新網頁滑桿文字顯示
+if (document.getElementById('pwrRange')) {
+    document.getElementById('pwrRange').value = 12; // 初始化網頁預設滑桿值
+}
+function updateLabel(val) { 
+    document.getElementById('pwrVal').innerText = "-" + val; 
 }
 
-// 功能 2：【全新網頁大招】直接透過網頁藍牙改寫硬件發射功率
+// 【開門功能】連線後對 CHARACTERISTIC_UUID_KEY 通道發送 "OPEN"
+async function sendOpenCmd() {
+    const statusDiv = document.getElementById('statusDiv');
+    statusDiv.innerHTML = "🔍 正在搜尋 _Gate 設備...";
+    statusDiv.style.color = "#333";
+    
+    try {
+        const device = await navigator.bluetooth.requestDevice({
+            filters: [{ name: '_Gate' }],
+            optionalServices: [SERVICE_UUID]
+        });
+        
+        statusDiv.innerHTML = "🔄 正在建立安全藍牙連線...";
+        const server = await device.gatt.connect();
+        
+        statusDiv.innerHTML = "⚡ 驗證成功！下發開鎖字串...";
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        const characteristic = await service.getCharacteristic(CHAR_KEY_UUID);
+        
+        await characteristic.writeValue(new TextEncoder().encode("OPEN"));
+        
+        statusDiv.innerHTML = "✅ [開門成功] 指令發送完成！\n請看電腦串口窗口。網頁即將重新整理...";
+        statusDiv.style.color = "green";
+        
+        // 斷開連線並自動重整，配合硬體端的 ESP.restart() 清空通道快取
+        setTimeout(() => {
+            try { server.disconnect(); } catch(e) {}
+            location.reload();
+        }, 1200);
+
+    } catch (error) {
+        console.log(error);
+        statusDiv.innerHTML = "❌ 失敗：" + error.message;
+        statusDiv.style.color = "red";
+    }
+}
+
+// 【改功率功能】連線後對 CHARACTERISTIC_UUID_PWR 通道發送 "SET_PWR:數字"
 async function sendPowerCmd() {
     const statusDiv = document.getElementById('statusDiv');
     const pwrTarget = document.getElementById('pwrRange').value;
-    statusDiv.innerHTML = `🔄 正在透過藍牙寫入功率設定: -${pwrTarget} dBm...`;
+    statusDiv.innerHTML = `🔄 正在寫入發射功率設定: -${pwrTarget} dBm...`;
+    statusDiv.style.color = "#333";
     
     try {
-        const device = await navigator.bluetooth.requestDevice({ filters: [{ name: '_Gate' }], optionalServices: [SERVICE_UUID] });
+        const device = await navigator.bluetooth.requestDevice({
+            filters: [{ name: '_Gate' }],
+            optionalServices: [SERVICE_UUID]
+        });
+        
+        statusDiv.innerHTML = "🔄 正在建立配置通道連線...";
         const server = await device.gatt.connect();
+        
+        statusDiv.innerHTML = `⚡ 正在將 -${pwrTarget} dBm 寫入晶片永久記憶體...`;
         const service = await server.getPrimaryService(SERVICE_UUID);
         
-        // 【對齊】精準抓取功率設定通道
+        // 【核心對齊】精準抓取尾數為 b 的功率修改特徵值通道
         const characteristic = await service.getCharacteristic(CHAR_PWR_UUID);
         
-        // 傳送指令給晶片（例如 "SET_PWR:24"）
+        // 發送格式為 "SET_PWR:數字" 的指令給晶片（例如 "SET_PWR:24"）
         await characteristic.writeValue(new TextEncoder().encode("SET_PWR:" + pwrTarget));
         
-        statusDiv.innerHTML = `🎉 [設定成功] 硬體已寫入 -${pwrTarget} dBm 並重啟復位！`;
+        statusDiv.innerHTML = `🎉 [設定成功] 硬體已寫入 -${pwrTarget} dBm 並完成重啟！\n新感應距離已生效。網頁即將重置...`;
         statusDiv.style.color = "green";
-        setTimeout(() => { server.disconnect(); location.reload(); }, 1500);
-    } catch (e) { statusDiv.innerHTML = "❌ 寫入失敗: " + e.message; statusDiv.style.color = "red"; }
+        
+        setTimeout(() => {
+            try { server.disconnect(); } catch(e) {}
+            location.reload();
+        }, 1500);
+
+    } catch (error) {
+        console.log(error);
+        statusDiv.innerHTML = "❌ 寫入失敗：" + error.message;
+        statusDiv.style.color = "red";
+    }
 }
 </script>
+
 </body>
 </html>
