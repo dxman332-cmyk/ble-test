@@ -99,9 +99,14 @@ async function startRssiRadarScan() {
                     statusDiv.style.color = "green";
                     
                     setTimeout(() => {
-                        try { server.disconnect(); } catch(e) {}
-                        location.reload();
-                    }, 1200);
+    try { 
+        server.disconnect(); // 主動切斷連線，晶片會由 OgtServerCallbacks 在 0 毫秒內原本地開廣播！
+    } catch(e) {}
+    
+    // 手機網頁直接重新整理，不留任何殘留快取
+    location.reload(); 
+}, 150); // 縮短到 150 毫秒，快如閃電！
+
                 } catch (err) {
                     statusDiv.innerHTML = "❌ 連線失敗：" + err.message;
                     hasTriggered = false;
