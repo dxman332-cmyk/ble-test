@@ -25,7 +25,6 @@
     
     <button id="radarBtn" onclick="startRssiRadarScan()">📡 啟動即時訊號雷達</button>
     
-    <!-- 實時訊號強度動態顯示區塊 -->
     <div class="rssi-box">
         📡 當前即時訊號強度 (RSSI)：<br>
         <span id="rssiVal" class="rssi-badge">--- dBm</span>
@@ -33,7 +32,6 @@
     
     <div id="statusDiv" class="status">等待使用者啟動雷達...</div>
 
-    <!-- 免燒錄功率調整區塊 -->
     <div class="pwr-section">
         <h3 style="margin-top: 0;">🔧 隔空修改硬體發射功率</h3>
         <label for="pwrRange" style="font-size: 14px;">設定硬體功率：<span id="pwrLabel" style="font-weight:bold;color:#007bff;">-12</span> dBm</label>
@@ -47,13 +45,11 @@ const SERVICE_UUID    = "4f475400-0000-0000-0000-000000000000"; // 'OGT'
 const CHAR_KEY_UUID   = "b9eab6ea-0000-0000-0000-000000000000"; // '門禁' 通道
 const CHAR_PWR_UUID   = "b9eab6eb-0000-0000-0000-000000000000"; // '功率' 通道
 
-// 硬性安全防線門檻：RSSI 必須高於 -52 dBm 網頁才允許秒連線開門
 const RSSI_THRESHOLD = -52; 
 let hasTriggered = false;
 
 function updateLabel(val) { document.getElementById('pwrLabel').innerText = "-" + val; }
 
-// 【開門功能】開啟即時雷達廣播監聽，絕對不盲目連線
 async function startRssiRadarScan() {
     const statusDiv = document.getElementById('statusDiv');
     const rssiVal = document.getElementById('rssiVal');
@@ -68,8 +64,6 @@ async function startRssiRadarScan() {
         });
         
         statusDiv.innerHTML = "📡 雷達連動成功！請手持手機「物理性貼緊晶片」觸發開鎖。";
-        
-        // 核心解鎖：強制開啟網頁廣播接收，此時 ESP32 繼續廣播，讓網頁能讀到即時 RSSI
         await device.watchAdvertisements();
         
         device.addEventListener('advertisementreceived', async (event) => {
@@ -78,14 +72,12 @@ async function startRssiRadarScan() {
             let rssi = event.rssi;
             rssiVal.innerHTML = rssi + " dBm";
             
-            // 動態變更色塊
             if (rssi >= RSSI_THRESHOLD) rssiVal.className = "rssi-badge rssi-success";
             else if (rssi >= -68) rssiVal.className = "rssi-badge rssi-near";
             else rssiVal.className = "rssi-badge";
 
-            // 【硬性安全檢查】只有當手機貼得夠近，RSSI 衝破 -52 dBm 的瞬間，網頁才執行開門！
             if (rssi >= RSSI_THRESHOLD && !hasTriggered) {
-                hasTriggered = true; // 鎖定防線，防止重複觸發
+                hasTriggered = true; 
                 statusDiv.innerHTML = `🎉 [衝破防線] 強度達到 ${rssi} dBm！\n正在秒連線下發開鎖密鑰...`;
                 
                 try {
@@ -95,17 +87,17 @@ async function startRssiRadarScan() {
                     
                     await characteristic.writeValue(new TextEncoder().encode("OPEN"));
                     
-                    statusDiv.innerHTML = `✅ [大門已開啟] 指令發送成功！\n當前貼緊強度: ${rssi} dBm\n網頁即將重新整理...`;
+                    statusDiv.innerHTML = `✅ [密文發送成功]\n正在極速切斷並優化手機藍牙快取...`;
                     statusDiv.style.color = "green";
                     
+                    // 【NimBLE 連續開門最佳化時序】
+                    // 1. 先主動切斷實體 GATT 連線，促使 ESP32 的 onDisconnect 0毫秒觸發廣播
+                    await server.disconnect(); 
+                    
+                    // 2. 給手機內部藍牙晶片 600 毫秒的充足時間來完全釋放快取毒素，隨後再重新整理網頁
                     setTimeout(() => {
-                try { 
-                    server.disconnect(); // 主動切斷連線，晶片會由 OgtServerCallbacks 在 0 毫秒內原本地開廣播！
-                    } catch(e) {}
-    
-    // 手機網頁直接重新整理，不留任何殘留快取
-                    location.reload(); 
-                    }, 150); // 縮短到 150 毫秒，快如閃電！
+                        location.reload();
+                    }, 600);
 
                 } catch (err) {
                     statusDiv.innerHTML = "❌ 連線失敗：" + err.message;
@@ -119,7 +111,6 @@ async function startRssiRadarScan() {
     }
 }
 
-// 【改功率功能】直接對 CHAR_PWR_UUID 通道發送設定
 async function sendPowerCmd() {
     const statusDiv = document.getElementById('statusDiv');
     const pwrTarget = document.getElementById('pwrRange').value;
@@ -132,9 +123,11 @@ async function sendPowerCmd() {
         const characteristic = await service.getCharacteristic(CHAR_PWR_UUID);
         
         await characteristic.writeValue(new TextEncoder().encode("SET_PWR:" + pwrTarget));
-        statusDiv.innerHTML = `🎉 [設定成功] 硬體已寫入 -${pwrTarget} dBm 並完成重啟！`;
+        statusDiv.innerHTML = `🎉 [設定成功] 功率已寫入硬體記憶體！\n正在切斷連線並同步刷新...`;
         statusDiv.style.color = "green";
-        setTimeout(() => { try { server.disconnect(); } catch(e) {} location.reload(); }, 1500);
+        
+        await server.disconnect();
+        setTimeout(() => { location.reload(); }, 600);
     } catch (error) {
         statusDiv.innerHTML = "❌ 寫入失敗：" + error.message;
         statusDiv.style.color = "red";
