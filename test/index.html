@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>_Gate 門禁快取優化調試端</title>
+    <title>_Gate 門禁精準連線端</title>
     <style>
         body { font-family: -apple-system, sans-serif; text-align: center; padding: 30px; background: #f4f6f9; color: #333; }
         .container { max-width: 500px; margin: 40px auto; background: white; padding: 30px; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
@@ -12,7 +12,7 @@
         #openBtn { background: #28a745; color: white; }
         #openBtn:disabled { background: #cccccc; cursor: not-allowed; }
         .section { border-top: 1px solid #eee; margin-top: 25px; padding-top: 20px; text-align: left; padding-left: 5%; }
-        #status { font-size: 14px; color: #444; background: #e9ecef; padding: 15px; border-radius: 8px; word-break: break-all; margin-top: 25px; text-align: left; font-family: monospace; }
+        #status { font-size: 14px; color: #444; background: #e9ecef; padding: 15px; border-radius: 8px; word-break: break-all; margin-top: 25px; text-align: left; font-family: monospace; line-height: 1.5; }
         .success-text { color: #28a745; font-weight: bold; }
         .error-text { color: #dc3545; font-weight: bold; }
     </style>
@@ -35,7 +35,7 @@
 </div>
 
 <script>
-    // 【核心修正】：嚴格同步您的 OGT 專屬 UUID
+    // 嚴格對應您的專屬 OGT UUID
     const SERVICE_UUID = "4f475400-0000-0000-0000-000000000000";
     const KEY_CHAR_UUID = "b9eab6ea-0000-0000-0000-000000000000";
 
@@ -47,17 +47,17 @@
     const statusText = document.getElementById('status');
 
     connectBtn.addEventListener('click', async () => {
-        statusText.innerHTML = "提示: 正在強制盲掃附近的藍牙...<br>請在瀏覽器彈窗中點選名為 <b>_Gate</b> 的裝置。";
+        statusText.innerHTML = "提示: 正在搜尋匹配專屬門禁 UUID 的裝置...";
         try {
+            // 【終極相容性修正】：改回精準過濾 UUID，強迫瀏覽器只抓符合這個 UUID 的硬體
             bleDevice = await navigator.bluetooth.requestDevice({
-                acceptAllDevices: true,
-                optionalServices: [SERVICE_UUID] 
+                filters: [{ services: [SERVICE_UUID] }]
             });
 
-            statusText.innerText = `已選取: ${bleDevice.name || '未命名'}，正在建立 GATT 連線...`;
+            statusText.innerText = `已選取: ${bleDevice.name || '門禁設備'}，正在建立 GATT 連線...`;
             
             bleDevice.addEventListener('gattserverdisconnected', () => {
-                statusText.innerHTML = "狀態: <span class='success-text'>藍牙已自動斷開</span>，快取洗白成功！現在您可以直接進行下一次搜尋。";
+                statusText.innerHTML = "狀態: <span class='success-text'>藍牙已自動斷開</span>，快取清除成功！現可直接進行下一次搜尋。";
                 openBtn.disabled = true;
                 connectBtn.disabled = false;
                 keyCharacteristic = null;
@@ -77,7 +77,9 @@
 
         } catch (error) {
             console.error(error);
-            statusText.innerHTML = "狀態: <span class='error-text'>連線開門失敗:</span> " + error.message;
+            statusText.innerHTML = "狀態: <span class='error-text'>連線失敗:</span><br>" + 
+                                   `<b>錯誤名稱:</b> ${error.name}<br>` +
+                                   `<b>錯誤訊息:</b> ${error.message}`;
         }
     });
 
@@ -89,7 +91,7 @@
             const data = encoder.encode("OPEN");
             
             await keyCharacteristic.writeValueWithoutResponse(data);
-            statusText.innerHTML = "<span class='success-text'>指令發送成功！</span><br>網頁正在主動中斷藍牙以強制刷新系統快取...";
+            statusText.innerHTML = "<span class='success-text'>指令發送成功！</span><br>網頁主動斷開連線以強制刷新快取...";
             openBtn.disabled = true;
 
             setTimeout(() => {
