@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>_Gate 門禁精準連線端</title>
+    <title>Proton 門禁精準控制端</title>
     <style>
         body { font-family: -apple-system, sans-serif; text-align: center; padding: 30px; background: #f4f6f9; color: #333; }
         .container { max-width: 500px; margin: 40px auto; background: white; padding: 30px; border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
@@ -20,14 +20,15 @@
 <body>
 
 <div class="container">
-    <h2>_Gate 藍牙通用控制台</h2>
+    <h2>Proton 門禁藍牙控制台</h2>
+    <p style="font-size: 12px; color:#666;">環境：GitHub Pages (HTTPS 安全加密)</p>
     
     <div>
         <button id="connectBtn">🔌 1. 搜尋並連接門禁裝置</button>
     </div>
 
     <div class="section">
-        <h3>門禁控制</h3>
+        <h3>門禁開鎖</h3>
         <button id="openBtn" disabled>🔓 2. 發送密文開門 (OPEN)</button>
     </div>
     
@@ -35,9 +36,9 @@
 </div>
 
 <script>
-    // 嚴格對應您的專屬 OGT UUID
-    const SERVICE_UUID = "4f475400-0000-0000-0000-000000000000";
-    const KEY_CHAR_UUID = "b9eab6ea-0000-0000-0000-000000000000";
+    // 【完美對應】：與您的 ESP32 代碼範例 UUID 完全一致
+    const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+    const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
     let bleDevice = null;
     let keyCharacteristic = null;
@@ -47,31 +48,32 @@
     const statusText = document.getElementById('status');
 
     connectBtn.addEventListener('click', async () => {
-        statusText.innerHTML = "提示: 正在搜尋匹配專屬門禁 UUID 的裝置...";
+        statusText.innerHTML = "提示: 正在精準搜尋匹配門禁 UUID 的裝置...";
         try {
-            // 【終極相容性修正】：改回精準過濾 UUID，強迫瀏覽器只抓符合這個 UUID 的硬體
+            // 利用主廣播中的服務 UUID 進行最穩定的精準匹配
             bleDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [SERVICE_UUID] }]
             });
 
-            statusText.innerText = `已選取: ${bleDevice.name || '門禁設備'}，正在建立 GATT 連線...`;
+            statusText.innerText = `已選取: ${bleDevice.name || 'Proton 設備'}，正在連接...`;
             
+            // 監聽中斷連線事件
             bleDevice.addEventListener('gattserverdisconnected', () => {
-                statusText.innerHTML = "狀態: <span class='success-text'>藍牙已自動斷開</span>，快取清除成功！現可直接進行下一次搜尋。";
+                statusText.innerHTML = "狀態: <span class='success-text'>藍牙已自動斷開</span><br>提示：雙向快取清理成功！ESP32 正在重啟，現在您可以直接點擊按鈕進行下一次搜尋。";
                 openBtn.disabled = true;
                 connectBtn.disabled = false;
                 keyCharacteristic = null;
             });
 
             const server = await bleDevice.gatt.connect();
-            statusText.innerText = "連線成功！正在獲取門鎖主服務...";
+            statusText.innerText = "連線成功！正在獲取主服務...";
             
             const service = await server.getPrimaryService(SERVICE_UUID);
-            statusText.innerText = "正在綁定資料傳輸通道...";
+            statusText.innerText = "正在綁定開鎖特徵通道...";
             
-            keyCharacteristic = await service.getCharacteristic(KEY_CHAR_UUID);
+            keyCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
 
-            statusText.innerHTML = "狀態: <span class='success-text'>連線成功！資料通道已就緒。</span>";
+            statusText.innerHTML = "狀態: <span class='success-text'>連線成功！開鎖通道已就緒。</span>";
             openBtn.disabled = false;
             connectBtn.disabled = true;
 
@@ -86,14 +88,16 @@
     openBtn.addEventListener('click', async () => {
         if (!keyCharacteristic || !bleDevice) return;
         try {
-            statusText.innerText = "正在向通道甩入開門密文 (OPEN)...";
+            statusText.innerText = "正在向通道發送開門指令 (OPEN)...";
             const encoder = new TextEncoder();
             const data = encoder.encode("OPEN");
             
+            // 寫入特徵值
             await keyCharacteristic.writeValueWithoutResponse(data);
-            statusText.innerHTML = "<span class='success-text'>指令發送成功！</span><br>網頁主動斷開連線以強制刷新快取...";
+            statusText.innerHTML = "<span class='success-text'>指令發送成功！</span><br>網頁正在主動中斷藍牙以刷新快取...";
             openBtn.disabled = true;
 
+            // 傳送後網頁立即主動切斷，強迫作業系統清空快取
             setTimeout(() => {
                 if (bleDevice && bleDevice.gatt.connected) {
                     bleDevice.gatt.disconnect();
