@@ -1,123 +1,175 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OGT 門禁即時訊號調試平台</title>
+    <title>OGT_GATE BLE 網頁測試端</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; padding: 20px; background-color: #f4f6f9; color: #333; }
-        .card { background: white; max-width: 400px; margin: 20px auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        button { background-color: #007bff; color: white; border: none; padding: 15px; font-size: 18px; border-radius: 8px; width: 100%; font-weight: bold; cursor: pointer; margin-bottom: 15px; }
-        .pwr-section { border-top: 1px solid #eee; padding-top: 20px; margin-top: 20px; text-align: left; }
-        .pwr-btn { background-color: #ffc107; color: #333; font-size: 16px; padding: 12px; }
-        .status { margin-top: 15px; padding: 12px; border-radius: 6px; background-color: #e9ecef; font-size: 14px; min-height: 50px; line-height: 1.4; white-space: pre-line; }
-        .rssi-box { margin: 15px 0; font-size: 16px; font-weight: bold; }
-        .rssi-badge { display: inline-block; padding: 8px 16px; border-radius: 20px; background-color: #6c757d; color: white; font-size: 22px; font-family: monospace; margin-top: 5px; }
-        .rssi-near { background-color: #ffc107; color: #333; }
-        .rssi-success { background-color: #28a745 !important; color: white; }
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
+        button { padding: 10px 20px; font-size: 16px; margin: 5px; cursor: pointer; }
+        .section { border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; border-radius: 5px; }
+        #status { font-weight: bold; color: blue; }
+        select { padding: 8px; font-size: 16px; }
     </style>
 </head>
 <body>
 
-<div class="card">
-    <h2>OGT 藍牙即時測距門禁系統</h2>
-    <p style="color: #666; font-size: 13px;">點擊下方啟動雷達，網頁會即時監聽並顯示您與大門的實時強度。</p>
+    <h2>OGT_GATE BLE 網頁測試控制台</h2>
     
-    <button id="radarBtn" onclick="startRssiRadarScan()">📡 啟動即時訊號雷達</button>
-    
-    <div class="rssi-box">
-        📡 當前即時訊號強度 (RSSI)：<br>
-        <span id="rssiVal" class="rssi-badge">--- dBm</span>
+    <div class="section">
+        <h3>1. 連線控制</h3>
+        <button id="connectBtn">連接藍牙裝置</button>
+        <button id="disconnectBtn" disabled>斷開連接</button>
+        <p>目前狀態: <span id="status">未連接</span></p>
     </div>
-    
-    <div id="statusDiv" class="status">等待使用者啟動...</div>
 
-    <div class="pwr-section">
-        <h3 style="margin-top: 0;">🔧 隔空修改硬體發射功率</h3>
-        <label for="pwrRange" style="font-size: 14px;">設定硬體功率：<span id="pwrLabel" style="font-weight:bold;color:#007bff;">-12</span> dBm</label>
-        <input type="range" id="pwrRange" min="9" max="24" step="3" value="12" style="width:100%; margin:12px 0;" oninput="updateLabel(this.value)">
-        <button class="pwr-btn" onclick="sendPowerCmd()">⚡ 寫入硬體快閃記憶體</button>
+    <div class="section">
+        <h3>2. 開門控制</h3>
+        <button id="openBtn" disabled>傳送 OPEN 指令</button>
+        <button id="customSendBtn" disabled>傳送自訂密碼</button>
     </div>
-</div>
 
-<script>
-const SERVICE_UUID    = "4f475400-0000-0000-0000-000000000000"; 
-const CHAR_KEY_UUID   = "b9eab6ea-0000-0000-0000-000000000000"; 
-const CHAR_PWR_UUID   = "b9eab6eb-0000-0000-0000-000000000000"; 
+    <div class="section">
+        <h3>3. 發射功率設定 (Tx Power)</h3>
+        <select id="pwrSelect" disabled>
+            <option value="-24">-24 dBm</option>
+            <option value="-21">-21 dBm</option>
+            <option value="-18">-18 dBm</option>
+            <option value="-15">-15 dBm</option>
+            <option value="-12" selected>-12 dBm</option>
+            <option value="-9">-9 dBm</option>
+            <option value="-6">-6 dBm</option>
+            <option value="-3">-3 dBm</option>
+            <option value="0">0 dBm</option>
+        </select>
+        <button id="setPwrBtn" disabled>設定功率</button>
+    </div>
 
-const RSSI_THRESHOLD = -52; 
-let hasTriggered = false;
+    <script>
+        // 對應 ESP32 的 UUID 設定
+        const SERVICE_UUID = "4f475400-0000-0000-0000-000000000000";
+        const KEY_CHAR_UUID = "b9eab6ea-0000-0000-0000-000000000000";
+        const POWER_CHAR_UUID = "b9eab6eb-0000-0000-0000-000000000000";
 
-function updateLabel(val) { document.getElementById('pwrLabel').innerText = "-" + val; }
+        let bleDevice = null;
+        let bleServer = null;
+        let bleService = null;
+        let keyCharacteristic = null;
+        let powerCharacteristic = null;
 
-async function startRssiRadarScan() {
-    const statusDiv = document.getElementById('statusDiv');
-    const rssiVal = document.getElementById('rssiVal');
-    statusDiv.innerHTML = "🔍 正在搜尋周圍的 _Gate 設備...";
-    hasTriggered = false;
+        // DOM 元素
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const openBtn = document.getElementById('openBtn');
+        const customSendBtn = document.getElementById('customSendBtn');
+        const pwrSelect = document.getElementById('pwrSelect');
+        const setPwrBtn = document.getElementById('setPwrBtn');
+        const statusText = document.getElementById('status');
 
-    try {
-        const device = await navigator.bluetooth.requestDevice({ filters: [{ name: '_Gate' }], optionalServices: [SERVICE_UUID] });
-        statusDiv.innerHTML = "📡 雷達連動成功！請手機「物理性貼緊晶片」觸發開鎖。";
-        await device.watchAdvertisements();
-        
-        device.addEventListener('advertisementreceived', async (event) => {
-            if (hasTriggered) return;
-            let rssi = event.rssi;
-            rssiVal.innerHTML = rssi + " dBm";
-            
-            if (rssi >= RSSI_THRESHOLD) rssiVal.className = "rssi-badge rssi-success";
-            else if (rssi >= -68) rssiVal.className = "rssi-badge rssi-near";
-            else rssiVal.className = "rssi-badge";
+        // 更新 UI 狀態
+        function setControlsEnabled(enabled) {
+            disconnectBtn.disabled = !enabled;
+            openBtn.disabled = !enabled;
+            customSendBtn.disabled = !enabled;
+            pwrSelect.disabled = !enabled;
+            setPwrBtn.disabled = !enabled;
+            connectBtn.disabled = enabled;
+        }
 
-            if (rssi >= RSSI_THRESHOLD && !hasTriggered) {
-                hasTriggered = true; 
-                statusDiv.innerHTML = `🎉 [衝破防線] 強度達到 ${rssi} dBm！\n正在秒連線下發開鎖密鑰...`;
+        // 1. 連接藍牙裝置
+        connectBtn.addEventListener('click', async () => {
+            statusText.innerText = "正在掃描裝置...";
+            try {
+                // 依據 Service UUID 進行過濾
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [SERVICE_UUID] }]
+                });
+
+                statusText.innerText = `正在連接到 ${bleDevice.name || 'OGT_GATE'}...`;
                 
-                try {
-                    const server = await device.gatt.connect();
-                    const service = await server.getPrimaryService(SERVICE_UUID);
-                    const characteristic = await service.getCharacteristic(CHAR_KEY_UUID);
-                    await characteristic.writeValue(new TextEncoder().encode("OPEN"));
-                    
-                    statusDiv.innerHTML = `✅ [開門成功] 正在同步重置硬件快取...`;
-                    statusDiv.style.color = "green";
-                    
-                    // 斷開並重整，預留 1.5 秒讓 ESP32 順利完成重啟
-                    setTimeout(() => {
-                        try { server.disconnect(); } catch(e) {}
-                        location.reload();
-                    }, 1500);
-                } catch (err) {
-                    statusDiv.innerHTML = "❌ 連線失敗：" + err.message;
-                    hasTriggered = false;
-                }
+                // 監聽斷開事件
+                bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+                bleServer = await bleDevice.gatt.connect();
+                statusText.innerText = "正在獲取服務...";
+
+                bleService = await bleServer.getPrimaryService(SERVICE_UUID);
+                
+                // 獲取特徵值
+                keyCharacteristic = await bleService.getCharacteristic(KEY_CHAR_UUID);
+                powerCharacteristic = await bleService.getCharacteristic(POWER_CHAR_UUID);
+
+                statusText.innerText = "已連線，可以開始測試";
+                setControlsEnabled(true);
+
+            } catch (error) {
+                console.error(error);
+                statusText.innerText = "連線失敗: " + error.message;
+                setControlsEnabled(false);
             }
         });
-    } catch (error) { statusDiv.innerHTML = "❌ 錯誤：" + error.message; }
-}
 
-async function sendPowerCmd() {
-    const statusDiv = document.getElementById('statusDiv');
-    const pwrTarget = document.getElementById('pwrRange').value;
-    statusDiv.innerHTML = `🔄 正在連線寫入發射功率設定: -${pwrTarget} dBm...`;
-    
-    try {
-        const device = await navigator.bluetooth.requestDevice({ filters: [{ name: '_Gate' }], optionalServices: [SERVICE_UUID] });
-        const server = await device.gatt.connect();
-        const service = await server.getPrimaryService(SERVICE_UUID);
-        const characteristic = await service.getCharacteristic(CHAR_PWR_UUID);
-        
-        await characteristic.writeValue(new TextEncoder().encode("SET_PWR:" + pwrTarget));
-        statusDiv.innerHTML = `🎉 [設定成功] 功率已寫入硬體！硬體重啟中...`;
-        statusDiv.style.color = "green";
-        
-        setTimeout(() => {
-            try { server.disconnect(); } catch(e) {}
-            location.reload();
-        }, 1500);
-    } catch (error) { statusDiv.innerHTML = "❌ 寫入失敗：" + error.message; }
-}
-</script>
+        // 2. 傳送開門/文字指令 (寫入 KEY_CHAR_UUID)
+        async function sendCommand(text) {
+            if (!keyCharacteristic) return;
+            try {
+                statusText.innerText = `正在傳送指令: ${text}`;
+                const encoder = new TextEncoder();
+                const data = encoder.encode(text);
+                
+                // 【核心修正】：因為 ESP32 只開了 WRITE 屬性，此處必須用 WithoutResponse
+                await keyCharacteristic.writeValueWithoutResponse(data);
+                
+                statusText.innerText = `指令 [${text}] 傳送成功`;
+            } catch (error) {
+                console.error(error);
+                statusText.innerText = "傳送失敗: " + error.message;
+            }
+        }
+
+        openBtn.addEventListener('click', () => sendCommand("OPEN"));
+        customSendBtn.addEventListener('click', () => {
+            const pwd = prompt("請輸入要轉送至後端的自訂資料/密碼:", "MY_SECRET_KEY_123");
+            if (pwd) sendCommand(pwd);
+        });
+
+        // 3. 設定發射功率 (寫入 POWER_CHAR_UUID)
+        setPwrBtn.addEventListener('click', async () => {
+            if (!powerCharacteristic) return;
+            const selectedPower = pwrSelect.value;
+            const pwrCommand = `SET_PWR:${selectedPower}`;
+            
+            try {
+                statusText.innerText = `正在設定功率: ${pwrCommand}`;
+                const encoder = new TextEncoder();
+                const data = encoder.encode(pwrCommand);
+                
+                // 【核心修正】：同樣必須使用 WithoutResponse
+                await powerCharacteristic.writeValueWithoutResponse(data);
+                
+                statusText.innerText = `功率設定指令 [${pwrCommand}] 已送出 (裝置將重啟廣播)`;
+            } catch (error) {
+                console.error(error);
+                statusText.innerText = "功率設定失敗: " + error.message;
+            }
+        });
+
+        // 4. 斷開連接
+        disconnectBtn.addEventListener('click', () => {
+            if (bleDevice && bleDevice.gatt.connected) {
+                bleDevice.gatt.disconnect();
+            }
+        });
+
+        function onDisconnected() {
+            statusText.innerText = "已與藍牙裝置斷開連接";
+            setControlsEnabled(false);
+            bleDevice = null;
+            bleServer = null;
+            bleService = null;
+            keyCharacteristic = null;
+            powerCharacteristic = null;
+        }
+    </script>
 </body>
 </html>
