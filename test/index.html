@@ -1,31 +1,162 @@
-connectBtn.addEventListener('click', async () => {
-    statusText.innerText = "正在強制掃描所有附近的藍牙裝置...";
-    try {
-        // 【終極修正】：不限制任何名字與服務，強制讓瀏覽器彈窗顯示附近所有藍牙
-        bleDevice = await navigator.bluetooth.requestDevice({
-            acceptAllDevices: true,
-            optionalServices: [SERVICE_UUID] // 這裡要保留，連線後才能開啟門鎖服務
-        });
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OGT 門禁新版測試端</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 30px; background: #f4f6f9; color: #333; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        button { padding: 12px 24px; font-size: 16px; margin: 8px; cursor: pointer; border-radius: 6px; border: none; font-weight: bold; transition: 0.2s; }
+        #connectBtn { background: #007bff; color: white; }
+        #connectBtn:hover { background: #0056b3; }
+        #openBtn { background: #28a745; color: white; }
+        #openBtn:hover { background: #218838; }
+        #setPwrBtn { background: #dc3545; color: white; }
+        #setPwrBtn:hover { background: #c82333; }
+        select { padding: 10px; font-size: 16px; border-radius: 6px; margin-right: 5px; }
+        .section { border-top: 1px solid #eee; margin-top: 20px; padding-top: 20px; text-align: left; }
+        #status { font-size: 15px; color: #666; background: #e9ecef; padding: 10px; border-radius: 6px; word-break: break-all; margin-top: 15px; }
+    </style>
+</head>
+<body>
 
-        statusText.innerText = `抓到裝置了！正在連接 ${bleDevice.name || '未命名裝置'}...`;
-        const server = await bleDevice.gatt.connect();
-        
-        statusText.innerText = "正在獲取門鎖服務...";
-        const service = await server.getPrimaryService(SERVICE_UUID);
-        keyCharacteristic = await service.getCharacteristic(KEY_CHAR_UUID);
+<div class="container">
+    <h2>OGT 門禁系統控制台</h2>
+    
+    <div>
+        <button id="connectBtn">🔌 連接門禁裝置</button>
+    </div>
 
-        statusText.innerText = "連線成功！";
-        openBtn.disabled = false;
-        connectBtn.disabled = true;
+    <div class="section">
+        <h3>門禁控制</h3>
+        <button id="openBtn" disabled>🔓 發送密文開門 (OPEN)</button>
+    </div>
 
-        bleDevice.addEventListener('gattserverdisconnected', () => {
-            statusText.innerText = "藍牙已斷開";
-            openBtn.disabled = true;
-            connectBtn.disabled = false;
-        });
+    <div class="section">
+        <h3>功率修改</h3>
+        <!-- 配合您 ESP32 寫入 preferences 的正整數格式 (如 12 代表 -12dBm) -->
+        <select id="pwrSelect" disabled>
+            <option value="24">-24 dBm</option>
+            <option value="21">-21 dBm</option>
+            <option value="18">-18 dBm</option>
+            <option value="15">-15 dBm</option>
+            <option value="12" selected>-12 dBm</option>
+            <option value="9">-9 dBm</option>
+            <option value="6">-6 dBm</option>
+            <option value="3">-3 dBm</option>
+            <option value="0">0 dBm</option>
+        </select>
+        <button id="setPwrBtn" disabled>⚙️ 設定功率</button>
+    </div>
+    
+    <div id="status">目前狀態: 尚未連接藍牙</div>
+</div>
 
-    } catch (error) {
-        console.error(error);
-        statusText.innerText = "連線失敗原因: " + error.name + " - " + error.message;
+<script>
+    // 嚴格對應您的 ESP32 UUID 定義
+    const SERVICE_UUID = "4f475400-0000-0000-0000-000000000000";
+    const KEY_CHAR_UUID = "b9eab6ea-0000-0000-0000-000000000000";
+    const PWR_CHAR_UUID = "b9eab6eb-0000-0000-0000-000000000000";
+
+    let bleDevice = null;
+    let keyCharacteristic = null;
+    let pwrCharacteristic = null;
+
+    const connectBtn = document.getElementById('connectBtn');
+    const openBtn = document.getElementById('openBtn');
+    const pwrSelect = document.getElementById('pwrSelect');
+    const setPwrBtn = document.getElementById('setPwrBtn');
+    const statusText = document.getElementById('status');
+
+    // 切換 UI 狀態
+    function updateUI(connected) {
+        connectBtn.disabled = connected;
+        openBtn.disabled = !connected;
+        pwrSelect.disabled = !connected;
+        setPwrBtn.disabled = !connected;
     }
-});
+
+    // 連線邏輯
+    connectBtn.addEventListener('click', async () => {
+        statusText.innerText = "正在掃描裝置...";
+        try {
+            // 【核心優化一】：既然 ESP32 廣播了 SERVICE_UUID，這裡直接用 UUID 進行精準過濾
+            // 這能讓瀏覽器在過濾名字（_Gate）的同時，自動授權該服務，連線成功率最高！
+            bleDevice = await navigator.bluetooth.requestDevice({
+                filters: [
+                    { services: [SERVICE_UUID] },
+                    { name: "_Gate" }
+                ],
+                optionalServices: [SERVICE_UUID] // 雙重保險授權
+            });
+
+            statusText.innerText = `已選取裝置: ${bleDevice.name}，正在建立 GATT 連線...`;
+            
+            // 監聽斷線事件
+            bleDevice.addEventListener('gattserverdisconnected', () => {
+                statusText.innerText = "藍牙已斷開（設備重啟中或已離線）";
+                updateUI(false);
+                keyCharacteristic = null;
+                pwrCharacteristic = null;
+            });
+
+            const server = await bleDevice.gatt.connect();
+            statusText.innerText = "連線成功！正在獲取 primary 服務...";
+            
+            const service = await server.getPrimaryService(SERVICE_UUID);
+            statusText.innerText = "正在獲取特徵通道...";
+            
+            // 同時獲取 開鎖 與 功率 兩個通道
+            keyCharacteristic = await service.getCharacteristic(KEY_CHAR_UUID);
+            pwrCharacteristic = await service.getCharacteristic(PWR_CHAR_UUID);
+
+            statusText.innerText = "系統已就緒，可以開始測試！";
+            updateUI(true);
+
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "連線失敗: " + error.name + " - " + error.message;
+            updateUI(false);
+        }
+    });
+
+    // 傳送開門密文 (KEY 通道)
+    openBtn.addEventListener('click', async () => {
+        if (!keyCharacteristic) return;
+        try {
+            statusText.innerText = "正在傳送開門訊號 (OPEN)...";
+            const encoder = new TextEncoder();
+            const data = encoder.encode("OPEN"); // 您的 ESP32 認 .equalsIgnoreCase("OPEN")
+            
+            // 必須使用 WithoutResponse
+            await keyCharacteristic.writeValueWithoutResponse(data);
+            statusText.innerText = "指令傳送成功！ESP32 將在 0.5 秒後自動斷開並重啟。";
+            
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "傳送失敗: " + error.message;
+        }
+    });
+
+    // 傳送功率修改指令 (PWR 通道)
+    setPwrBtn.addEventListener('click', async () => {
+        if (!pwrCharacteristic) return;
+        const val = pwrSelect.value;
+        try {
+            statusText.innerText = `正在發送功率修改指令: SET_PWR:${val}`;
+            const encoder = new TextEncoder();
+            const data = encoder.encode(`SET_PWR:${val}`);
+            
+            await pwrCharacteristic.writeValueWithoutResponse(data);
+            statusText.innerText = `功率設定成功！ESP32 正在重啟套用 -${val} dBm...`;
+            
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "功率修改失敗: " + error.message;
+        }
+    });
+</script>
+
+</body>
+</html>
