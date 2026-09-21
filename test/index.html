@@ -1,87 +1,31 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OGT 簡易測試端</title>
-    <style>
-        body { font-family: sans-serif; text-align: center; padding-top: 50px; background: #f4f4f9; }
-        button { padding: 15px 30px; font-size: 18px; margin: 10px; cursor: pointer; border-radius: 8px; border: none; }
-        #connectBtn { background: #007bff; color: white; }
-        #openBtn { background: #28a745; color: white; }
-        #status { font-size: 18px; color: #555; margin-top: 20px; font-weight: bold; }
-    </style>
-</head>
-<body>
-
-    <h2>OGT_GATE 藍牙測試控制台</h2>
-    
-    <button id="connectBtn">1. 連接藍牙裝置</button>
-    <button id="openBtn" disabled>2. 傳送 OPEN 開門</button>
-    
-    <p id="status">目前狀態: 尚未連接</p>
-
-    <script>
-        const SERVICE_UUID = "4f475400-0000-0000-0000-000000000000";
-        const KEY_CHAR_UUID = "b9eab6ea-0000-0000-0000-000000000000";
-
-        let keyCharacteristic = null;
-        let bleDevice = null;
-
-        const connectBtn = document.getElementById('connectBtn');
-        const openBtn = document.getElementById('openBtn');
-        const statusText = document.getElementById('status');
-
-        // 藍牙連線邏輯
-        connectBtn.addEventListener('click', async () => {
-            statusText.innerText = "正在掃描裝置...";
-            try {
-                // 依據主廣播名稱直接精準過濾
-                bleDevice = await navigator.bluetooth.requestDevice({
-                    filters: [{ name: "OGT_GATE" }],
-                    optionalServices: [SERVICE_UUID]
-                });
-
-                statusText.innerText = "正在連接裝置...";
-                const server = await bleDevice.gatt.connect();
-                
-                statusText.innerText = "正在獲取服務...";
-                const service = await server.getPrimaryService(SERVICE_UUID);
-                keyCharacteristic = await service.getCharacteristic(KEY_CHAR_UUID);
-
-                statusText.innerText = "連線成功！可以開始測試。";
-                openBtn.disabled = false;
-                connectBtn.disabled = true;
-
-                // 監聽斷線事件
-                bleDevice.addEventListener('gattserverdisconnected', () => {
-                    statusText.innerText = "藍牙已斷開，請重新連線";
-                    openBtn.disabled = true;
-                    connectBtn.disabled = false;
-                });
-
-            } catch (error) {
-                console.error(error);
-                statusText.innerText = "錯誤: " + error.message;
-            }
+connectBtn.addEventListener('click', async () => {
+    statusText.innerText = "正在強制掃描所有附近的藍牙裝置...";
+    try {
+        // 【終極修正】：不限制任何名字與服務，強制讓瀏覽器彈窗顯示附近所有藍牙
+        bleDevice = await navigator.bluetooth.requestDevice({
+            acceptAllDevices: true,
+            optionalServices: [SERVICE_UUID] // 這裡要保留，連線後才能開啟門鎖服務
         });
 
-        // 傳送開門指令
-        openBtn.addEventListener('click', async () => {
-            if (!keyCharacteristic) return;
-            try {
-                statusText.innerText = "正在傳送 OPEN...";
-                const encoder = new TextEncoder();
-                const data = encoder.encode("OPEN");
-                
-                // 配合 PROPERTY_WRITE，必須使用 WithoutResponse
-                await keyCharacteristic.writeValueWithoutResponse(data);
-                statusText.innerText = "OPEN 指令傳送成功！";
-            } catch (error) {
-                console.error(error);
-                statusText.innerText = "傳送失敗: " + error.message;
-            }
+        statusText.innerText = `抓到裝置了！正在連接 ${bleDevice.name || '未命名裝置'}...`;
+        const server = await bleDevice.gatt.connect();
+        
+        statusText.innerText = "正在獲取門鎖服務...";
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        keyCharacteristic = await service.getCharacteristic(KEY_CHAR_UUID);
+
+        statusText.innerText = "連線成功！";
+        openBtn.disabled = false;
+        connectBtn.disabled = true;
+
+        bleDevice.addEventListener('gattserverdisconnected', () => {
+            statusText.innerText = "藍牙已斷開";
+            openBtn.disabled = true;
+            connectBtn.disabled = false;
         });
-    </script>
-</body>
-</html>
+
+    } catch (error) {
+        console.error(error);
+        statusText.innerText = "連線失敗原因: " + error.name + " - " + error.message;
+    }
+});
